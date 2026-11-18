@@ -1,0 +1,12 @@
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "light"
+primaryColor = "#7A4A2B"
+backgroundColor = "#F4EADB"
+secondaryBackgroundColor = "#E8D6BC"
+textColor = "#3A2618"
+linkColor = "#8B4A1F"
+borderColor = "#C9AD8C"
+blueColor = "#7A4A2B"

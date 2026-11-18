@@ -1,0 +1,19 @@
+# Secrets
+.env
+.streamlit/secrets.toml
+
+# Python
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+.pytest_cache/
+.cache/
+*.egg-info/
+
+# Local artifacts
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

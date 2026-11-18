@@ -1,0 +1,6 @@
+streamlit>=1.46,<2
+requests>=2.31
+python-dotenv>=1.0
+google-genai>=1.0
+pytest>=8.0
+# pandas is installed automatically as a Streamlit dependency (used only for the chart).
