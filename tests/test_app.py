@@ -101,3 +101,25 @@ def test_unavailable_api_shows_error_and_retry(monkeypatch):
     assert not at.exception
     assert any("unavailable" in e.value for e in at.error)
     assert any("Retry" in b.label for b in at.button)
+
+
+def test_place_in_url_is_restored_and_shows_the_verdict_first(monkeypatch):
+    no_network(monkeypatch)
+    sample = dp.load_sample()
+    monkeypatch.setattr(dp, "fetch_air_quality", lambda lat, lon: {**sample, "is_sample": False})
+    at = AppTest.from_file(APP, default_timeout=15)
+    at.query_params.update({"place": "Hyderabad, Telangana, India", "lat": "17.3850", "lon": "78.4867"})
+    at.run()
+    assert not at.exception
+    assert not at.selectbox or all("Which one" not in s.label for s in at.selectbox)  # single place: no dropdown
+    assert list(m.label for m in at.metric)[0] == "US AQI right now (modelled)"
+    assert any("Hyderabad, Telangana, India" in c.value for c in at.caption)
+
+
+def test_bad_coordinates_in_url_are_ignored(monkeypatch):
+    no_network(monkeypatch)
+    at = AppTest.from_file(APP, default_timeout=15)
+    at.query_params.update({"place": "<b>x</b>", "lat": "999", "lon": "abc"})
+    at.run()
+    assert not at.exception
+    assert any("Search for a place" in i.value for i in at.info)

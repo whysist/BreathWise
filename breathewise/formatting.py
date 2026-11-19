@@ -38,15 +38,23 @@ def format_metric(key: str, value, unit: str) -> str:
     return f"{value:.1f} {unit}".strip()
 
 
-# US EPA AQI scale (upper bound, label, badge colour, short description). The category is always shown as text.
+# US EPA AQI scale: upper bound, label, badge colour, standard EPA hex colour, short description,
+# and a plain-language "what to do" line. The category is always shown as text, never by colour alone.
 _AQI_BANDS = [
-    (50, "Good", "green", "Air quality is considered satisfactory."),
-    (100, "Moderate", "orange", "Acceptable for most people; a few unusually sensitive people may notice effects."),
-    (150, "Unhealthy for sensitive groups", "orange",
-     "Sensitive groups, such as children, older adults and people with heart or lung conditions, may be affected."),
-    (200, "Unhealthy", "red", "Everyone may begin to be affected; sensitive groups more seriously."),
-    (300, "Very unhealthy", "violet", "Health-alert level for everyone."),
-    (float("inf"), "Hazardous", "red", "Emergency-level conditions."),
+    (50, "Good", "green", "#00A651", "Air quality is considered satisfactory.",
+     "A good time to open the windows and let fresh air in."),
+    (100, "Moderate", "orange", "#D9A400",
+     "Acceptable for most people; a few unusually sensitive people may notice effects.",
+     "Fine for most people. Anyone unusually sensitive may want to take it easy outdoors."),
+    (150, "Unhealthy for sensitive groups", "orange", "#F07F00",
+     "Sensitive groups, such as children, older adults and people with heart or lung conditions, may be affected.",
+     "Children, older adults and sensitive people should cut down long or hard outdoor activity."),
+    (200, "Unhealthy", "red", "#E0262B", "Everyone may begin to be affected; sensitive groups more seriously.",
+     "Keep windows closed and cut down long or hard outdoor activity for everyone."),
+    (300, "Very unhealthy", "violet", "#8F3F97", "Health-alert level for everyone.",
+     "Stay indoors where you can, keep windows shut, and run a purifier if you have one."),
+    (float("inf"), "Hazardous", "red", "#7E0023", "Emergency-level conditions.",
+     "Stay indoors where you can and follow local public-health advisories."),
 ]
 
 
@@ -54,7 +62,7 @@ def aqi_category(value) -> dict | None:
     """US AQI category for a value, or None when the value is missing."""
     if value is None:
         return None
-    for upper, label, color, note in _AQI_BANDS:
+    for upper, label, color, hex_color, note, advice in _AQI_BANDS:
         if value <= upper:
-            return {"label": label, "color": color, "note": note}
+            return {"label": label, "color": color, "hex": hex_color, "note": note, "advice": advice}
     return None

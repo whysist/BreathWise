@@ -3,6 +3,13 @@
 This file only composes the UI. Data access lives in breathewise/data_provider.py,
 the rules in breathewise/recommendations.py and the optional LLM call in
 breathewise/assistant.py.
+
+Layout follows "answer first, details on demand":
+  1. a one-line promise and a compact place search,
+  2. a verdict card (AQI, what it means, what to do, cleaner/worse windows),
+  3. a short routine questionnaire that turns into a personal plan,
+  4. the charts, numbers and caveats for anyone who wants to dig in,
+  5. a shareable checklist to finish on.
 """
 import hashlib
 import json
@@ -20,13 +27,15 @@ from breathewise.data_provider import FIELDS, POLLUTANTS, DataUnavailable
 load_dotenv()
 st.set_page_config(page_title="BreatheWise", page_icon="🌬️", layout="centered")
 
-CHART_COLOR = "#7A4A2B"
+CHART_COLOR = "#1F7A8C"
 MEDICAL_NOTE = ("This app provides general air-quality information, not medical advice. "
                 "Follow local public-health advisories and seek professional care for urgent symptoms.")
 MODEL_CAVEAT = ("**Modelled forecast estimate, not a sensor reading.** These values come from a global "
                 "atmospheric model (CAMS) via Open-Meteo. For much of the world the model grid is roughly 45 km wide, "
                 "so it describes a wide area, not your street or home. It is not an official CPCB reading "
                 "and says nothing about indoor air.")
+SHORT_CAVEAT = ("Modelled regional forecast covering roughly a 45 km area, not a sensor at your home. "
+                "Shown as US AQI, not India's CPCB AQI. More under “Explore the forecast”.")
 AQI_NOTE = ("**About the AQI:** the AQI index (air quality index) turns pollutant levels into one number. "
             "This one is the **US AQI**, calculated by the data provider from the modelled concentrations. "
             "It is **not India's National AQI (CPCB)**, which uses a different scale, so it can differ from the AQI "
@@ -36,6 +45,37 @@ GLOSSARY = ("**PM2.5** and **PM10** are tiny airborne particles under 2.5 and 10
             "**Nitrogen dioxide (NO₂)** is a gas released mainly by traffic and combustion. "
             "**Ozone (O₃)** is a gas formed when sunlight reacts with other pollutants. "
             "μg/m³ means micrograms per cubic metre of air.")
+
+BASE_CSS = """
+<style>
+  /* Tighter, calmer type: headings guide, they don't shout. */
+  h1 { font-size: 2.4rem !important; letter-spacing: -0.02em; margin-bottom: 0 !important; }
+  h2 { font-size: 1.45rem !important; margin-top: 1.6rem !important; }
+  h3 { font-size: 1.1rem !important; }
+  .bw-tagline { font-size: 1.15rem; color: #44545F; margin: 0.2rem 0 1.2rem 0; }
+  /* Recommendation cards: white on the tinted page so they read as "things to do". */
+  .st-key-plan [data-testid="stVerticalBlockBorderWrapper"],
+  .st-key-plan div[class*="st-key-rec-"] { background: #FFFFFF; border-radius: 12px; }
+</style>
+"""
+
+
+def verdict_css(hex_color: str) -> str:
+    """Colour the verdict card by AQI category. hex_color comes from formatting's fixed table."""
+    return f"""
+<style>
+  .st-key-verdict {{
+      background: #FFFFFF;
+      border: 1px solid #D3DFE4 !important;
+      border-left: 10px solid {hex_color} !important;
+      border-radius: 16px !important;
+      box-shadow: 0 4px 18px rgba(30, 42, 51, 0.07);
+      padding: 1.2rem 1.4rem !important;
+  }}
+  .st-key-verdict [data-testid="stMetricValue"] {{ color: {hex_color}; font-size: 3.4rem; font-weight: 700; }}
+  .st-key-verdict h3 {{ font-size: 1.35rem !important; line-height: 1.35; padding-top: 0.2rem; }}
+</style>
+"""
 
 
 # Public, non-personal lookups only (geocoding and forecasts). Short TTL; failures are not cached.
@@ -63,20 +103,46 @@ def llm_config() -> tuple[str, str]:
     return values["GEMINI_API_KEY"], values["GEMINI_MODEL"]
 
 
-# --------------------------------------------------------------------------- #
-# 1. Title
-# --------------------------------------------------------------------------- #
-st.title("BreatheWise")
-st.write("A simple clean-air plan for your household, based on a regional air-quality forecast.")
+def place_from_url() -> dict | None:
+    """Restore the last chosen place from ?place=…&lat=…&lon=… so returning visitors land on their answer."""
+    params = st.query_params
+    try:
+        lat, lon = data_provider.validate_coordinates(params["lat"], params["lon"])
+    except (KeyError, ValueError):
+        return None
+    label = data_provider.clean_text(params.get("place", ""), 200) or f"{lat:.2f}, {lon:.2f}"
+    return {"name": label, "region": "", "country": "", "latitude": lat, "longitude": lon, "label": label}
+
+
+def remember_place(place: dict) -> None:
+    """Put the place in the URL (bookmarkable/shareable). Only the public place name and coordinates."""
+    wanted = {"place": place["label"], "lat": f"{place['latitude']:.4f}", "lon": f"{place['longitude']:.4f}"}
+    if any(st.query_params.get(k) != v for k, v in wanted.items()):
+        st.query_params.update(wanted)
+
+
+st.html(BASE_CSS)
 
 # --------------------------------------------------------------------------- #
-# 2. Location
+# 1. Promise
 # --------------------------------------------------------------------------- #
-st.header("Choose a location")
-with st.form("place_search"):
-    query = st.text_input("City or place name", max_chars=data_provider.MAX_QUERY_LEN,
-                          placeholder="For example: Delhi")
-    searched = st.form_submit_button("Search for this place")
+st.title("BreatheWise")
+st.html('<p class="bw-tagline">Know when to open the windows, when to head out, '
+        'and how to keep the air at home cleaner today.</p>')
+
+# --------------------------------------------------------------------------- #
+# 2. Location (compact: one row, the dropdown only when there is a real choice)
+# --------------------------------------------------------------------------- #
+if "places" not in st.session_state:
+    restored = place_from_url()
+    if restored:
+        st.session_state["places"] = [restored]
+
+with st.form("place_search", border=False):
+    c_query, c_button = st.columns([4, 1], vertical_alignment="bottom")
+    query = c_query.text_input("Where are you?", max_chars=data_provider.MAX_QUERY_LEN,
+                               placeholder="City or town, for example: Hyderabad")
+    searched = c_button.form_submit_button("Search", type="primary", width="stretch")
 if searched:
     st.session_state["places"], st.session_state["search_message"] = [], None
     try:
@@ -92,12 +158,16 @@ if st.session_state.get("search_message"):
 
 places = st.session_state.get("places", [])
 place = None
-if places:
-    index = st.selectbox("Choose the matching place", range(len(places)),
+if len(places) == 1:
+    place = places[0]
+elif places:
+    index = st.selectbox("Several places match. Which one do you mean?", range(len(places)),
                          format_func=lambda i: places[i]["label"])
     place = places[index]
 
-use_sample = st.checkbox("Show sample data instead (demonstration only, not live)", key="use_sample")
+with st.expander("No place in mind? Preview the app with sample data",
+                 expanded=bool(st.session_state.get("use_sample"))):
+    use_sample = st.checkbox("Use sample data (demonstration only, not live)", key="use_sample")
 
 # --------------------------------------------------------------------------- #
 # 3. Forecast data
@@ -113,6 +183,7 @@ elif place:
     try:
         with st.spinner("Loading the forecast…"):
             forecast = cached_forecast(place["latitude"], place["longitude"])
+        remember_place(place)
     except (DataUnavailable, ValueError) as exc:
         st.error(f"The air-quality forecast is unavailable right now. {exc} No values are being shown.")
         if st.button("Retry loading the forecast"):
@@ -120,10 +191,9 @@ elif place:
             st.rerun()
 
 if forecast is None:
-    st.info("Search for a place above to see its air-quality outlook and your plan for today.")
+    st.info("Search for a place above to see today's air and a simple plan for your household.")
     st.stop()
 
-st.markdown(f"Selected location: **{place_label}**")
 if forecast["is_sample"]:
     st.warning("**Sample data — not live.** These numbers are made up for demonstration and do not describe any real place.")
 
@@ -131,125 +201,84 @@ hourly, units, current = forecast["hourly"], forecast["units"], forecast["curren
 analysis = recs_mod.analyze_forecast(hourly)
 label = analysis["label"]
 
-st.header("Air-quality outlook")
+# --------------------------------------------------------------------------- #
+# 4. Verdict card: the answer, before anything else
+# --------------------------------------------------------------------------- #
 aqi_now = current["values"]["us_aqi"]
 aqi_cat = formatting.aqi_category(aqi_now)
-with st.container(border=True):
-    st.metric("US AQI right now (modelled)", formatting.format_metric("us_aqi", aqi_now, ""))
-    if aqi_cat:
-        st.badge(aqi_cat["label"], color=aqi_cat["color"])
-        st.write(f"**{aqi_cat['label']}.** {aqi_cat['note']} (US EPA scale)")
-    else:
-        st.write("The AQI is not available in this forecast. The pollutant values below are still shown.")
-st.markdown(AQI_NOTE)
-st.info(MODEL_CAVEAT)
-st.markdown(
-    f"- **Location:** {place_label}\n"
-    f"- **Source:** {forecast['provider']}\n"
-    f"- **Forecast time:** {formatting.format_time(current['time'])} ({forecast['timezone']})\n"
-    f"- **Retrieved:** {formatting.format_retrieved(forecast['retrieved_at'])}"
-)
-st.subheader("What is in the air (modelled)")
-keys = list(POLLUTANTS)
-for row_keys in (keys[:2], keys[2:]):
-    for col, key in zip(st.columns(2), row_keys):
-        with col, st.container(border=True):
-            st.metric(POLLUTANTS[key], formatting.format_metric(key, current["values"][key], units[key]))
-st.markdown(GLOSSARY)
+st.html(verdict_css(aqi_cat["hex"] if aqi_cat else "#8A9BA5"))
 
-# --------------------------------------------------------------------------- #
-# 4. Trend
-# --------------------------------------------------------------------------- #
-st.header("Forecast trend")
-metric = st.selectbox("What to chart", list(FIELDS), format_func=FIELDS.get)
-span = st.radio("Time span", ["Next 24 hours", "Next 48 hours (as far as available)"], horizontal=True)
-shown = hourly[:24] if span.startswith("Next 24") else hourly
-series = [(row["time"], row[metric]) for row in shown if row[metric] is not None]
-axis_label = FIELDS[metric] if metric == "us_aqi" else f"{FIELDS[metric]} ({units[metric]})"
-if len(series) < 2:
-    st.warning(f"{FIELDS[metric]}: Not available in this forecast.")
-else:
-    # Plain column name on purpose: dots/brackets in a name break Streamlit's chart (field-path parsing).
-    frame = pd.DataFrame({"Value": [v for _, v in series]}, index=pd.to_datetime([t for t, _ in series]))
-    st.line_chart(frame, x_label=f"Time ({forecast['timezone']})", y_label=axis_label, color=CHART_COLOR)
-    lo, hi = min(series, key=lambda p: p[1]), max(series, key=lambda p: p[1])
-    st.markdown(
-        f"Chart description: modelled hourly **{FIELDS[metric]}** from {formatting.format_time(series[0][0])} "
-        f"to {formatting.format_time(series[-1][0])}. The lowest value in this range is "
-        f"{formatting.format_metric(metric, lo[1], units[metric])} around {formatting.format_time(lo[0])}; the highest is "
-        f"{formatting.format_metric(metric, hi[1], units[metric])} around {formatting.format_time(hi[0])}."
-    )
-if analysis["clear_difference"]:
-    st.markdown(
-        f"- **Relatively lower {label} period:** {analysis['lower']['label']} "
-        f"({recs_mod.describe(analysis['metric'], analysis['lower']['avg'])})\n"
-        f"- **Relatively higher {label} period:** {analysis['higher']['label']} "
-        f"({recs_mod.describe(analysis['metric'], analysis['higher']['avg'])})\n\n"
-        "These compare 3-hour periods between 06:00 and 22:00 within this model's next 24 hours. "
-        "“Lower” does not mean safe."
-    )
-elif analysis["status"] == "flat":
-    st.markdown(f"**No clear lower or higher {label} period** stands out in the next 24 hours, so the plan uses general guidance.")
-else:
-    st.markdown("**Not enough valid forecast data** to compare periods, so the plan uses general guidance.")
+with st.container(key="verdict"):
+    st.caption(f"📍 {place_label} · {formatting.format_time(current['time'])} ({forecast['timezone']})")
+    c_num, c_text = st.columns([1, 2.2], vertical_alignment="center")
+    with c_num:
+        st.metric("US AQI right now (modelled)", formatting.format_metric("us_aqi", aqi_now, ""))
+    with c_text:
+        if aqi_cat:
+            st.badge(aqi_cat["label"], color=aqi_cat["color"])
+            st.markdown(f"### {aqi_cat['advice']}")
+        else:
+            st.markdown("### The AQI is not available in this forecast.")
+            st.write("The pollutant values further down are still shown.")
 
-with st.expander("Show the forecast as a table"):
-    marks = {}
     if analysis["clear_difference"]:
-        for name, mark in (("lower", "Relatively lower period"), ("higher", "Relatively higher period")):
-            start, end = analysis[name]["start"], analysis[name]["end"]
-            for row in hourly:
-                if start <= row["time"] < end:
-                    marks[row["time"]] = mark
-    table = [{"Time": formatting.format_time(row["time"]),
-              **{(FIELDS[k] if k == "us_aqi" else f"{FIELDS[k]} ({units[k]})"):
-                 formatting.format_metric(k, row[k], "").strip() for k in FIELDS},
-              f"Period marker ({label})": marks.get(row["time"], "")} for row in hourly]
-    st.dataframe(table, hide_index=True, width="stretch")
+        c_low, c_high = st.columns(2)
+        with c_low, st.container(border=True):
+            st.markdown(f"🌤️ **Relatively lower {label} period**  \n{analysis['lower']['label']}")
+            st.caption(recs_mod.describe(analysis["metric"], analysis["lower"]["avg"]))
+        with c_high, st.container(border=True):
+            st.markdown(f"🌫️ **Relatively higher {label} period**  \n{analysis['higher']['label']}")
+            st.caption(recs_mod.describe(analysis["metric"], analysis["higher"]["avg"]))
+        st.caption("Compares 3-hour periods between 06:00 and 22:00 in the next 24 hours. "
+                   "“Lower” does not mean safe.")
+    elif analysis["status"] == "flat":
+        st.markdown(f"**No clear lower or higher {label} period** stands out in the next 24 hours.")
+    else:
+        st.markdown("**Not enough valid forecast data** to compare periods today.")
+    st.caption(SHORT_CAVEAT)
 
 # --------------------------------------------------------------------------- #
 # 5. Household routine (session state only)
 # --------------------------------------------------------------------------- #
-st.header("Your household routine")
-st.write("Tell us about your day and the plan will be built around it. These answers stay in this browser session "
-         "only; they are not saved or logged.")
+st.header("Get a plan for your household")
+st.write("About a minute. Your answers stay in this browser session only; nothing is saved or logged.")
 
-st.markdown("**Getting around**")
+st.markdown("**1 · Getting around**")
 mode = st.selectbox("How do you usually get around?", list(recs_mod.COMMUTE_MODES),
                     format_func=recs_mod.COMMUTE_MODES.get, key="pref_mode")
 departure, distance = time(8, 30), 0.0
 if mode != "wfh":
     c1, c2 = st.columns(2)
-    departure = c1.time_input("Typical departure time", value=time(8, 30), key="pref_departure")
-    distance = c2.number_input("Approximate one-way commute distance in km (optional; leave 0 to skip)",
+    departure = c1.time_input("Usual departure time", value=time(8, 30), key="pref_departure")
+    distance = c2.number_input("One-way distance in km (optional, 0 to skip)",
                                min_value=0.0, max_value=recs_mod.MAX_DISTANCE_KM, value=0.0, step=1.0,
                                key="pref_distance")
-exercise = st.radio("Exercise preference", list(recs_mod.EXERCISE_OPTIONS), index=2,
+exercise = st.radio("Exercise", list(recs_mod.EXERCISE_OPTIONS), index=2,
                     format_func=recs_mod.EXERCISE_OPTIONS.get, horizontal=True, key="pref_exercise")
 exercise_time = "flexible"
 if exercise == "outdoors":
     exercise_time = st.radio("When do you usually exercise outdoors?", list(recs_mod.EXERCISE_TIME_OPTIONS),
                              format_func=recs_mod.EXERCISE_TIME_OPTIONS.get, horizontal=True, key="pref_exercise_time")
 
-st.markdown("**At home**")
+st.markdown("**2 · At home**")
 cooking = st.radio("How do you mostly cook?", list(recs_mod.COOKING_OPTIONS), index=3,
                    format_func=recs_mod.COOKING_OPTIONS.get, horizontal=True, key="pref_cooking")
-indoor_sources = st.multiselect("Does any of this happen at home? (choose any that apply)",
-                                list(recs_mod.INDOOR_SOURCE_OPTIONS),
-                                format_func=recs_mod.INDOOR_SOURCE_OPTIONS.get, key="pref_sources",
-                                placeholder="None of these, or choose any")
-purifier = st.radio("Does your household have an air purifier?", list(recs_mod.PURIFIER_OPTIONS), index=2,
+purifier = st.radio("Do you have an air purifier?", list(recs_mod.PURIFIER_OPTIONS), index=2,
                     format_func=recs_mod.PURIFIER_OPTIONS.get, horizontal=True, key="pref_purifier")
 
-st.markdown("**Who and what matters most**")
-household = st.multiselect("Who lives with you? (optional, general groups only)", list(recs_mod.HOUSEHOLD_OPTIONS),
-                           format_func=recs_mod.HOUSEHOLD_OPTIONS.get, key="pref_household",
-                           placeholder="Choose any that apply")
-struggles = st.multiselect("What is hardest for you right now? (optional)", list(recs_mod.STRUGGLE_OPTIONS),
-                           format_func=recs_mod.STRUGGLE_OPTIONS.get, key="pref_struggles",
-                           placeholder="Choose any that apply")
+with st.expander("**3 · Optional:** make the plan more specific to your home"):
+    indoor_sources = st.multiselect("Does any of this happen at home?",
+                                    list(recs_mod.INDOOR_SOURCE_OPTIONS),
+                                    format_func=recs_mod.INDOOR_SOURCE_OPTIONS.get, key="pref_sources",
+                                    placeholder="None of these, or choose any")
+    household = st.multiselect("Who lives with you? (general groups only)", list(recs_mod.HOUSEHOLD_OPTIONS),
+                               format_func=recs_mod.HOUSEHOLD_OPTIONS.get, key="pref_household",
+                               placeholder="Choose any that apply")
+    struggles = st.multiselect("What is hardest for you right now?", list(recs_mod.STRUGGLE_OPTIONS),
+                               format_func=recs_mod.STRUGGLE_OPTIONS.get, key="pref_struggles",
+                               placeholder="Choose any that apply")
 
-if st.button("Build my plan", type="primary"):
+if st.button("Build my plan", type="primary", icon="✨"):
     st.session_state["plan_ready"] = True
 
 try:
@@ -276,25 +305,28 @@ else:
                    "the more specific this plan becomes.")
     for line in recs_mod.build_journey(prefs, hourly):
         st.markdown(f"- {line}")
-    for category in recs_mod.CATEGORIES:
-        items = [r for r in recommendations if r["category"] == category]
-        if not items:
-            continue
-        st.subheader(category)
-        for r in items:
-            with st.container(border=True):
-                st.markdown(f"**{r['title']}**")
-                st.markdown(
-                    f"- **Action:** {r['action']}\n"
-                    f"- **Why:** {r['reason']}\n"
-                    f"- **Likely direction of impact:** {r['expected_direction_of_impact']}\n"
-                    f"- **Effort / cost:** {r['effort']} effort, {r['cost']}\n"
-                    f"- **Limitation:** {r['caveat']}"
-                )
+
+    with st.container(key="plan"):
+        for category in recs_mod.CATEGORIES:
+            items = [r for r in recommendations if r["category"] == category]
+            if not items:
+                continue
+            st.subheader(category)
+            for r in items:
+                with st.container(border=True, key=f"rec-{r['id']}"):
+                    st.markdown(f"**✓ {r['title']}**")
+                    st.markdown(r["action"])
+                    st.caption(f"{r['effort'].capitalize()} effort · {r['cost']}")
+                    with st.expander("Why, and what to expect"):
+                        st.markdown(
+                            f"- **Why:** {r['reason']}\n"
+                            f"- **Likely direction of impact:** {r['expected_direction_of_impact']}\n"
+                            f"- **Limitation:** {r['caveat']}"
+                        )
 
     context = assistant.build_context(place_label, forecast, prefs, recommendations, analysis)
-    st.subheader("Why this plan")
-    st.markdown(assistant.template_explanation(context))
+    with st.expander("Why this plan"):
+        st.markdown(assistant.template_explanation(context))
     st.caption(MEDICAL_NOTE)
 
     # ----------------------------------------------------------------------- #
@@ -325,24 +357,83 @@ else:
             st.caption("AI-written explanation of the data and plan above. It may be wrong; it cannot see anything else.")
 
 # --------------------------------------------------------------------------- #
-# 8. Checklist, sources and limitations
+# 8. Details on demand: trend, pollutants, caveats
+# --------------------------------------------------------------------------- #
+st.header("Explore the forecast")
+c_metric, c_span = st.columns([3, 2], vertical_alignment="bottom")
+metric = c_metric.selectbox("What to chart", list(FIELDS), format_func=FIELDS.get)
+span = c_span.segmented_control("Time span", ["Next 24 hours", "Next 48 hours"], default="Next 24 hours") \
+    or "Next 24 hours"
+shown = hourly[:24] if span == "Next 24 hours" else hourly
+series = [(row["time"], row[metric]) for row in shown if row[metric] is not None]
+axis_label = FIELDS[metric] if metric == "us_aqi" else f"{FIELDS[metric]} ({units[metric]})"
+if len(series) < 2:
+    st.warning(f"{FIELDS[metric]}: Not available in this forecast.")
+else:
+    # Plain column name on purpose: dots/brackets in a name break Streamlit's chart (field-path parsing).
+    frame = pd.DataFrame({"Value": [v for _, v in series]}, index=pd.to_datetime([t for t, _ in series]))
+    st.line_chart(frame, x_label=f"Time ({forecast['timezone']})", y_label=axis_label, color=CHART_COLOR)
+    lo, hi = min(series, key=lambda p: p[1]), max(series, key=lambda p: p[1])
+    st.caption(
+        f"Chart description: modelled hourly **{FIELDS[metric]}** from {formatting.format_time(series[0][0])} "
+        f"to {formatting.format_time(series[-1][0])}. The lowest value in this range is "
+        f"{formatting.format_metric(metric, lo[1], units[metric])} around {formatting.format_time(lo[0])}; the highest is "
+        f"{formatting.format_metric(metric, hi[1], units[metric])} around {formatting.format_time(hi[0])}."
+    )
+
+with st.expander("What is in the air right now (modelled)"):
+    keys = list(POLLUTANTS)
+    for row_keys in (keys[:2], keys[2:]):
+        for col, key in zip(st.columns(2), row_keys):
+            with col, st.container(border=True):
+                st.metric(POLLUTANTS[key], formatting.format_metric(key, current["values"][key], units[key]))
+    st.markdown(GLOSSARY)
+
+with st.expander("Show the forecast as a table"):
+    marks = {}
+    if analysis["clear_difference"]:
+        for name, mark in (("lower", "Relatively lower period"), ("higher", "Relatively higher period")):
+            start, end = analysis[name]["start"], analysis[name]["end"]
+            for row in hourly:
+                if start <= row["time"] < end:
+                    marks[row["time"]] = mark
+    table = [{"Time": formatting.format_time(row["time"]),
+              **{(FIELDS[k] if k == "us_aqi" else f"{FIELDS[k]} ({units[k]})"):
+                 formatting.format_metric(k, row[k], "").strip() for k in FIELDS},
+              f"Period marker ({label})": marks.get(row["time"], "")} for row in hourly]
+    st.dataframe(table, hide_index=True, width="stretch")
+
+with st.expander("Where these numbers come from"):
+    st.info(MODEL_CAVEAT)
+    if aqi_cat:
+        st.write(f"**{aqi_cat['label']}** on the US EPA scale: {aqi_cat['note']}")
+    st.markdown(AQI_NOTE)
+    st.markdown(
+        f"- **Location:** {place_label}\n"
+        f"- **Source:** {forecast['provider']}\n"
+        f"- **Forecast time:** {formatting.format_time(current['time'])} ({forecast['timezone']})\n"
+        f"- **Retrieved:** {formatting.format_retrieved(forecast['retrieved_at'])}"
+    )
+
+# --------------------------------------------------------------------------- #
+# 9. Finish on something useful to keep
 # --------------------------------------------------------------------------- #
 st.header("Share a clean-air checklist")
-st.write("A general checklist for family, neighbours or a resident group. It has no coordinates or household details.")
+st.write("A short checklist for family, neighbours or a resident group. "
+         "It has no coordinates or household details.")
 checklist = recs_mod.build_checklist(place_label, analysis, forecast["retrieved_at"], forecast["is_sample"])
-st.download_button("Download checklist as a text file", checklist, file_name="breathewise_checklist.txt",
-                   mime="text/plain")
 st.code(checklist, language=None)
-st.write("To copy it, use the copy icon at the top right of the box above.")
+st.download_button("Download checklist", checklist, file_name="breathewise_checklist.txt",
+                   mime="text/plain", icon="⬇️")
 
-st.header("Sources and limitations")
-st.markdown(
-    "- **Data:** [Open-Meteo Air Quality API](https://open-meteo.com/en/docs/air-quality-api) "
-    "(CAMS model data), with [Open-Meteo geocoding](https://open-meteo.com/en/docs/geocoding-api) for place search.\n"
-    "- These are modelled forecast estimates, not readings from a sensor at your home and not official CPCB station data.\n"
-    "- The AQI shown is the provider's **US AQI**. This app does not calculate or show India's National AQI, "
-    "and does not measure indoor air.\n"
-    "- Recommendations are general and directional. They cannot measure improvement in your neighbourhood's air "
-    "or your personal health risk."
-)
+with st.expander("Sources and limitations"):
+    st.markdown(
+        "- **Data:** [Open-Meteo Air Quality API](https://open-meteo.com/en/docs/air-quality-api) "
+        "(CAMS model data), with [Open-Meteo geocoding](https://open-meteo.com/en/docs/geocoding-api) for place search.\n"
+        "- These are modelled forecast estimates, not readings from a sensor at your home and not official CPCB station data.\n"
+        "- The AQI shown is the provider's **US AQI**. This app does not calculate or show India's National AQI, "
+        "and does not measure indoor air.\n"
+        "- Recommendations are general and directional. They cannot measure improvement in your neighbourhood's air "
+        "or your personal health risk."
+    )
 st.caption(MEDICAL_NOTE)

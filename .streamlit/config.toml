@@ -1,12 +1,14 @@
 [browser]
 gatherUsageStats = false
 
+# Calm, "clean air" palette: cool neutrals plus one sky-teal accent.
+# Strong colour is reserved for the AQI category so it always carries meaning.
 [theme]
 base = "light"
-primaryColor = "#7A4A2B"
-backgroundColor = "#F4EADB"
-secondaryBackgroundColor = "#E8D6BC"
-textColor = "#3A2618"
-linkColor = "#8B4A1F"
-borderColor = "#C9AD8C"
-blueColor = "#7A4A2B"
+primaryColor = "#1F7A8C"
+backgroundColor = "#F6F9FA"
+secondaryBackgroundColor = "#E8F0F3"
+textColor = "#1E2A33"
+linkColor = "#1F7A8C"
+borderColor = "#D3DFE4"
+blueColor = "#1F7A8C"
