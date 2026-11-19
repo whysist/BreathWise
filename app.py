@@ -28,6 +28,10 @@ load_dotenv()
 st.set_page_config(page_title="BreatheWise", page_icon="🌬️", layout="centered")
 
 CHART_COLOR = "#1F7A8C"
+# Google's auto-updating alias, so the app doesn't break when a pinned model is retired.
+# Override with GEMINI_MODEL in secrets (that value is not secret; the key is).
+DEFAULT_MODEL = "gemini-flash-latest"
+MAX_AI_CALLS_PER_SESSION = 5  # only applies when the app owner's shared key is used
 MEDICAL_NOTE = ("This app provides general air-quality information, not medical advice. "
                 "Follow local public-health advisories and seek professional care for urgent symptoms.")
 MODEL_CAVEAT = ("**Modelled forecast estimate, not a sensor reading.** These values come from a global "
@@ -333,17 +337,37 @@ else:
     # 7. Ask a question (optional AI)
     # ----------------------------------------------------------------------- #
     st.header("Ask a question")
-    api_key, model = llm_config()
-    if not (api_key and model):
-        st.info("AI explanations are disabled because no GEMINI_API_KEY and GEMINI_MODEL are configured. "
+    server_key, configured_model = llm_config()
+    model = configured_model or DEFAULT_MODEL
+    if server_key:
+        api_key, using_own_key = server_key, False
+    else:
+        # Bring your own key: kept only in this browser session's memory, sent only to Google's Gemini API,
+        # never written to disk, logs, the URL or the cache.
+        st.write("Gemini explains your plan in plain language and answers questions about it. "
+                 "To use it, paste your own free Gemini API key "
+                 "([get one in Google AI Studio](https://aistudio.google.com/apikey)).")
+        api_key = st.text_input("Your Gemini API key", type="password", key="user_gemini_key",
+                                placeholder="Paste a key starting with AIza…", autocomplete="off").strip()
+        using_own_key = True
+        st.caption("Your key stays in this browser session only. It is sent to Google to answer your question "
+                   "and is never saved or logged. Closing the tab forgets it.")
+    if not api_key:
+        st.info("AI explanations are disabled because no Gemini API key is available yet. "
                 "The plan and explanation above come from built-in rules and work without AI.")
     else:
+        used = st.session_state.get("ai_calls", 0)
+        limit_hit = not using_own_key and used >= MAX_AI_CALLS_PER_SESSION
         with st.form("ask_form"):
             question = st.text_area("Ask about your plan or the forecast (optional, up to 500 characters)",
                                     max_chars=assistant.MAX_QUESTION_CHARS)
-            asked = st.form_submit_button("Explain my plan with AI")
+            asked = st.form_submit_button("Explain my plan with AI", disabled=limit_hit)
+        if limit_hit:
+            st.warning(f"This demo allows {MAX_AI_CALLS_PER_SESSION} AI questions per visit on the shared key. "
+                       "The built-in plan above keeps working.")
         signature = hashlib.sha256(json.dumps(context, sort_keys=True).encode()).hexdigest()
-        if asked:
+        if asked and not limit_hit:
+            st.session_state["ai_calls"] = used + 1
             with st.spinner("Asking the AI model…"):
                 result = assistant.explain(context, question, api_key, model)
             st.session_state["ai_result"] = {**result, "sig": signature, "question": assistant.clean_question(question)}

@@ -150,7 +150,7 @@ def explain(context: dict, question: str | None, api_key: str | None, model: str
         if code == 429 or "RateLimit" in name or "RESOURCE_EXHAUSTED" in str(code):
             note = "The AI service is rate-limited right now."
         elif code in (401, 403) or (code == 400 and "api key" in str(exc).lower()):
-            note = "The AI service rejected the configured key."
+            note = "The AI service rejected the API key."
         elif "Timeout" in name or "Connect" in name or "Connection" in name:
             note = "The AI service could not be reached in time."
         else:

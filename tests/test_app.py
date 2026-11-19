@@ -123,3 +123,35 @@ def test_bad_coordinates_in_url_are_ignored(monkeypatch):
     at.run()
     assert not at.exception
     assert any("Search for a place" in i.value for i in at.info)
+
+
+def test_visitor_can_bring_their_own_key_and_it_is_not_kept_in_results(monkeypatch):
+    no_network(monkeypatch)
+    calls = []
+
+    def fake_explain(context, question, api_key, model, client=None):
+        calls.append((api_key, model))
+        return {"text": "AI says hello", "used_ai": True, "note": None}
+
+    monkeypatch.setattr("breathewise.assistant.explain", fake_explain)
+    at = click_build(sample_app())
+    assert any("AI explanations are disabled" in i.value for i in at.info)
+    at.text_input(key="user_gemini_key").input("AIza-test-key").run()
+    at.text_area[0].input("Can my child play outside?").run()
+    next(b for b in at.button if b.label == "Explain my plan with AI").click().run()
+    assert not at.exception
+    assert calls == [("AIza-test-key", "gemini-flash-latest")]
+    assert "AIza" not in str(at.session_state["ai_result"])
+    assert any("AI says hello" in m.value for m in at.markdown)
+
+
+def test_shared_key_is_capped_per_session(monkeypatch):
+    no_network(monkeypatch)
+    monkeypatch.setenv("GEMINI_API_KEY", "server-key")
+    monkeypatch.setattr("breathewise.assistant.explain",
+                        lambda *a, **k: {"text": "ok", "used_ai": True, "note": None})
+    at = click_build(sample_app())
+    assert not any(t.key == "user_gemini_key" for t in at.text_input)
+    at.session_state["ai_calls"] = 5
+    at.run()
+    assert any("AI questions per visit" in w.value for w in at.warning)

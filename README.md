@@ -63,12 +63,17 @@ Tests mock all HTTP and the LLM client; they need no network or API key. They co
 
 ## Optional: AI explanations
 
-Set both variables to enable the AI explanation and question box. Without them the app shows a note that AI explanations are disabled and uses a template explanation.
+The AI explanation works in one of two ways:
+
+- **Bring your own key (default for public deployments).** If no `GEMINI_API_KEY` is configured, visitors see a password field where they can paste their own free Gemini key. The key is held only in that browser session's memory, sent only to Google's Gemini API, and never written to disk, logs, the URL or the cache.
+- **Shared owner key (optional).** If `GEMINI_API_KEY` is set in secrets, it is used server-side (visitors never see it) and each visit is limited to 5 AI questions. Use a dedicated key with a quota or budget cap.
+
+Without any key the app shows a note that AI explanations are disabled and uses a template explanation.
 
 | Variable | Purpose |
 | --- | --- |
-| `GEMINI_API_KEY` | Your Google Gemini API key (create one in [Google AI Studio](https://aistudio.google.com/apikey)) |
-| `GEMINI_MODEL` | Gemini model name to use (not hardcoded, so you can pick a current one) |
+| `GEMINI_API_KEY` | Optional shared Google Gemini API key (create one in [Google AI Studio](https://aistudio.google.com/apikey)). Leave unset for bring-your-own-key |
+| `GEMINI_MODEL` | Optional model name. Defaults to `gemini-flash-latest`, Google's auto-updating alias |
 
 Locally: copy `.env.example` to `.env` and fill in the values (`.env` is git-ignored). Or create `.streamlit/secrets.toml` (also git-ignored):
 
@@ -83,13 +88,13 @@ How the model is used: it is called only after the rules have produced the plan,
 
 1. Push this repository to GitHub (check that `.env` and `.streamlit/secrets.toml` are not committed).
 2. In [Streamlit Community Cloud](https://streamlit.io/cloud), choose **Create app**, select the repository and set the main file to `app.py`.
-3. Optional AI: open **Advanced settings → Secrets** (or the app's **Settings → Secrets**) and paste `GEMINI_API_KEY = "..."` and `GEMINI_MODEL = "..."`.
+3. Optional shared AI key: open **Advanced settings → Secrets** (or the app's **Settings → Secrets**) and paste `GEMINI_API_KEY = "..."`. Skip this step to make visitors bring their own key.
 4. Deploy. No Docker or infrastructure is needed.
 
 ## Privacy
 
 - Routine answers, selected place and questions live in Streamlit session state only. Nothing is written to files or a database, and private inputs are not logged.
-- Usage statistics are switched off in `.streamlit/config.toml`, which also holds the beige/brown colour theme.
+- Usage statistics are switched off in `.streamlit/config.toml`, which also holds the colour theme.
 - Only public place-name and forecast lookups are cached (30 minutes). LLM replies are not cached globally.
 - Place names are sent to Open-Meteo for geocoding, and the chosen place's coordinates are sent to Open-Meteo for the forecast. With AI enabled, the compact context above is sent to Google's Gemini API.
 

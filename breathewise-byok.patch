@@ -1,0 +1,152 @@
+diff --git a/README.md b/README.md
+index 5fa94c8..652213d 100644
+--- a/README.md
++++ b/README.md
+@@ -63,12 +63,17 @@ Tests mock all HTTP and the LLM client; they need no network or API key. They co
+ 
+ ## Optional: AI explanations
+ 
+-Set both variables to enable the AI explanation and question box. Without them the app shows a note that AI explanations are disabled and uses a template explanation.
++The AI explanation works in one of two ways:
++
++- **Bring your own key (default for public deployments).** If no `GEMINI_API_KEY` is configured, visitors see a password field where they can paste their own free Gemini key. The key is held only in that browser session's memory, sent only to Google's Gemini API, and never written to disk, logs, the URL or the cache.
++- **Shared owner key (optional).** If `GEMINI_API_KEY` is set in secrets, it is used server-side (visitors never see it) and each visit is limited to 5 AI questions. Use a dedicated key with a quota or budget cap.
++
++Without any key the app shows a note that AI explanations are disabled and uses a template explanation.
+ 
+ | Variable | Purpose |
+ | --- | --- |
+-| `GEMINI_API_KEY` | Your Google Gemini API key (create one in [Google AI Studio](https://aistudio.google.com/apikey)) |
+-| `GEMINI_MODEL` | Gemini model name to use (not hardcoded, so you can pick a current one) |
++| `GEMINI_API_KEY` | Optional shared Google Gemini API key (create one in [Google AI Studio](https://aistudio.google.com/apikey)). Leave unset for bring-your-own-key |
++| `GEMINI_MODEL` | Optional model name. Defaults to `gemini-flash-latest`, Google's auto-updating alias |
+ 
+ Locally: copy `.env.example` to `.env` and fill in the values (`.env` is git-ignored). Or create `.streamlit/secrets.toml` (also git-ignored):
+ 
+@@ -83,13 +88,13 @@ How the model is used: it is called only after the rules have produced the plan,
+ 
+ 1. Push this repository to GitHub (check that `.env` and `.streamlit/secrets.toml` are not committed).
+ 2. In [Streamlit Community Cloud](https://streamlit.io/cloud), choose **Create app**, select the repository and set the main file to `app.py`.
+-3. Optional AI: open **Advanced settings → Secrets** (or the app's **Settings → Secrets**) and paste `GEMINI_API_KEY = "..."` and `GEMINI_MODEL = "..."`.
++3. Optional shared AI key: open **Advanced settings → Secrets** (or the app's **Settings → Secrets**) and paste `GEMINI_API_KEY = "..."`. Skip this step to make visitors bring their own key.
+ 4. Deploy. No Docker or infrastructure is needed.
+ 
+ ## Privacy
+ 
+ - Routine answers, selected place and questions live in Streamlit session state only. Nothing is written to files or a database, and private inputs are not logged.
+-- Usage statistics are switched off in `.streamlit/config.toml`, which also holds the beige/brown colour theme.
++- Usage statistics are switched off in `.streamlit/config.toml`, which also holds the colour theme.
+ - Only public place-name and forecast lookups are cached (30 minutes). LLM replies are not cached globally.
+ - Place names are sent to Open-Meteo for geocoding, and the chosen place's coordinates are sent to Open-Meteo for the forecast. With AI enabled, the compact context above is sent to Google's Gemini API.
+ 
+diff --git a/app.py b/app.py
+index cf057d6..936d8ed 100644
+--- a/app.py
++++ b/app.py
+@@ -28,6 +28,10 @@ load_dotenv()
+ st.set_page_config(page_title="BreatheWise", page_icon="🌬️", layout="centered")
+ 
+ CHART_COLOR = "#1F7A8C"
++# Google's auto-updating alias, so the app doesn't break when a pinned model is retired.
++# Override with GEMINI_MODEL in secrets (that value is not secret; the key is).
++DEFAULT_MODEL = "gemini-flash-latest"
++MAX_AI_CALLS_PER_SESSION = 5  # only applies when the app owner's shared key is used
+ MEDICAL_NOTE = ("This app provides general air-quality information, not medical advice. "
+                 "Follow local public-health advisories and seek professional care for urgent symptoms.")
+ MODEL_CAVEAT = ("**Modelled forecast estimate, not a sensor reading.** These values come from a global "
+@@ -333,17 +337,37 @@ else:
+     # 7. Ask a question (optional AI)
+     # ----------------------------------------------------------------------- #
+     st.header("Ask a question")
+-    api_key, model = llm_config()
+-    if not (api_key and model):
+-        st.info("AI explanations are disabled because no GEMINI_API_KEY and GEMINI_MODEL are configured. "
++    server_key, configured_model = llm_config()
++    model = configured_model or DEFAULT_MODEL
++    if server_key:
++        api_key, using_own_key = server_key, False
++    else:
++        # Bring your own key: kept only in this browser session's memory, sent only to Google's Gemini API,
++        # never written to disk, logs, the URL or the cache.
++        st.write("Gemini explains your plan in plain language and answers questions about it. "
++                 "To use it, paste your own free Gemini API key "
++                 "([get one in Google AI Studio](https://aistudio.google.com/apikey)).")
++        api_key = st.text_input("Your Gemini API key", type="password", key="user_gemini_key",
++                                placeholder="Paste a key starting with AIza…", autocomplete="off").strip()
++        using_own_key = True
++        st.caption("Your key stays in this browser session only. It is sent to Google to answer your question "
++                   "and is never saved or logged. Closing the tab forgets it.")
++    if not api_key:
++        st.info("AI explanations are disabled because no Gemini API key is available yet. "
+                 "The plan and explanation above come from built-in rules and work without AI.")
+     else:
++        used = st.session_state.get("ai_calls", 0)
++        limit_hit = not using_own_key and used >= MAX_AI_CALLS_PER_SESSION
+         with st.form("ask_form"):
+             question = st.text_area("Ask about your plan or the forecast (optional, up to 500 characters)",
+                                     max_chars=assistant.MAX_QUESTION_CHARS)
+-            asked = st.form_submit_button("Explain my plan with AI")
++            asked = st.form_submit_button("Explain my plan with AI", disabled=limit_hit)
++        if limit_hit:
++            st.warning(f"This demo allows {MAX_AI_CALLS_PER_SESSION} AI questions per visit on the shared key. "
++                       "The built-in plan above keeps working.")
+         signature = hashlib.sha256(json.dumps(context, sort_keys=True).encode()).hexdigest()
+-        if asked:
++        if asked and not limit_hit:
++            st.session_state["ai_calls"] = used + 1
+             with st.spinner("Asking the AI model…"):
+                 result = assistant.explain(context, question, api_key, model)
+             st.session_state["ai_result"] = {**result, "sig": signature, "question": assistant.clean_question(question)}
+diff --git a/breathewise/assistant.py b/breathewise/assistant.py
+index bbcdf07..6ccbea6 100644
+--- a/breathewise/assistant.py
++++ b/breathewise/assistant.py
+@@ -150,7 +150,7 @@ def explain(context: dict, question: str | None, api_key: str | None, model: str
+         if code == 429 or "RateLimit" in name or "RESOURCE_EXHAUSTED" in str(code):
+             note = "The AI service is rate-limited right now."
+         elif code in (401, 403) or (code == 400 and "api key" in str(exc).lower()):
+-            note = "The AI service rejected the configured key."
++            note = "The AI service rejected the API key."
+         elif "Timeout" in name or "Connect" in name or "Connection" in name:
+             note = "The AI service could not be reached in time."
+         else:
+diff --git a/tests/test_app.py b/tests/test_app.py
+index e440237..9fdbe0e 100644
+--- a/tests/test_app.py
++++ b/tests/test_app.py
+@@ -123,3 +123,35 @@ def test_bad_coordinates_in_url_are_ignored(monkeypatch):
+     at.run()
+     assert not at.exception
+     assert any("Search for a place" in i.value for i in at.info)
++
++
++def test_visitor_can_bring_their_own_key_and_it_is_not_kept_in_results(monkeypatch):
++    no_network(monkeypatch)
++    calls = []
++
++    def fake_explain(context, question, api_key, model, client=None):
++        calls.append((api_key, model))
++        return {"text": "AI says hello", "used_ai": True, "note": None}
++
++    monkeypatch.setattr("breathewise.assistant.explain", fake_explain)
++    at = click_build(sample_app())
++    assert any("AI explanations are disabled" in i.value for i in at.info)
++    at.text_input(key="user_gemini_key").input("AIza-test-key").run()
++    at.text_area[0].input("Can my child play outside?").run()
++    next(b for b in at.button if b.label == "Explain my plan with AI").click().run()
++    assert not at.exception
++    assert calls == [("AIza-test-key", "gemini-flash-latest")]
++    assert "AIza" not in str(at.session_state["ai_result"])
++    assert any("AI says hello" in m.value for m in at.markdown)
++
++
++def test_shared_key_is_capped_per_session(monkeypatch):
++    no_network(monkeypatch)
++    monkeypatch.setenv("GEMINI_API_KEY", "server-key")
++    monkeypatch.setattr("breathewise.assistant.explain",
++                        lambda *a, **k: {"text": "ok", "used_ai": True, "note": None})
++    at = click_build(sample_app())
++    assert not any(t.key == "user_gemini_key" for t in at.text_input)
++    at.session_state["ai_calls"] = 5
++    at.run()
++    assert any("AI questions per visit" in w.value for w in at.warning)
